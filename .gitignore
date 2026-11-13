@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build artifacts produced by the deploy scripts
+*.zip
+build/
+dist/
+
+# Run output that carries account-specific resource ARNs
+endtoend/stack.json
+endtoend/run_results.json
+evaluation/results.json
+
+# Local environment and editor state
+.env
+.DS_Store
+.idea/
+.vscode/
