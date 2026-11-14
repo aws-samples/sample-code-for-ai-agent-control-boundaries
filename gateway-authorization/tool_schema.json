@@ -1,0 +1,23 @@
+{
+  "_comment": "Tool schema for the record_award tool gated by award_threshold.cedar. The amount parameter MUST be declared integer, not number. A parameter typed number reaches Cedar as a string, and the comparison context.input.amount <= 50000 then silently denies by default. This is the most common cause of a Cedar policy that looks correct but rejects valid requests.",
+  "name": "record_award",
+  "description": "Record an approved benefits award for a case",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "case_id": {
+        "type": "string",
+        "description": "Case reference in the system of record"
+      },
+      "amount": {
+        "type": "integer",
+        "description": "Award amount in whole currency units. Declared integer so Cedar evaluates it numerically."
+      },
+      "program": {
+        "type": "string",
+        "description": "Benefits program the award applies to: housing, food_assistance, or energy"
+      }
+    },
+    "required": ["case_id", "amount", "program"]
+  }
+}

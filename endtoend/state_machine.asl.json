@@ -1,0 +1,383 @@
+{
+  "Comment": "Boundary-first eligibility workflow. Every boundary is a real state.",
+  "StartAt": "Classify",
+  "States": {
+    "Classify": {
+      "Type": "Task",
+      "Comment": "Boundaries 1 and 3. The guardrail is attached to the Converse call inside this function, so the service screens the input. Boundary 3 is the in-code check that every extracted number appears in the record.",
+      "Resource": "${ClassifyFunctionArn}",
+      "Parameters": {
+        "caseId.$": "$.caseId",
+        "record.$": "$.record"
+      },
+      "ResultPath": "$.classification",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ThrottlingException",
+            "ServiceQuotaExceededException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HumanReview"
+        }
+      ],
+      "Next": "CheckInputBoundary"
+    },
+    "CheckInputBoundary": {
+      "Type": "Choice",
+      "Comment": "A blocked input never reaches the award path.",
+      "Choices": [
+        {
+          "Variable": "$.classification.blocked",
+          "BooleanEquals": true,
+          "Next": "HumanReview"
+        }
+      ],
+      "Default": "RouteByCategory"
+    },
+    "RouteByCategory": {
+      "Type": "Choice",
+      "Comment": "Boundary 4, control. Code routes on an allowlist of known categories. An unrecognized or null category cannot proceed.",
+      "Choices": [
+        {
+          "Or": [
+            {
+              "Variable": "$.classification.category",
+              "StringEquals": "housing"
+            },
+            {
+              "Variable": "$.classification.category",
+              "StringEquals": "food_assistance"
+            },
+            {
+              "Variable": "$.classification.category",
+              "StringEquals": "energy"
+            }
+          ],
+          "Next": "ComputeAward"
+        }
+      ],
+      "Default": "HumanReview"
+    },
+    "ComputeAward": {
+      "Type": "Task",
+      "Comment": "Code applies the published rules. The model never produces the award amount, so an arithmetic error is impossible rather than merely validated.",
+      "Resource": "${ComputeAwardFunctionArn}",
+      "Parameters": {
+        "caseId.$": "$.caseId",
+        "facts.$": "$.classification.facts",
+        "category.$": "$.classification.category"
+      },
+      "ResultPath": "$.determination",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HumanReview"
+        }
+      ],
+      "Next": "CheckEscalation"
+    },
+    "CheckEscalation": {
+      "Type": "Choice",
+      "Comment": "The rules themselves can require a human, for example when income is undocumented.",
+      "Choices": [
+        {
+          "Variable": "$.determination.escalate",
+          "BooleanEquals": true,
+          "Next": "HumanReview"
+        }
+      ],
+      "Default": "ValidateOutput"
+    },
+    "ValidateOutput": {
+      "Type": "Task",
+      "Comment": "Boundary 2, intermediate. Defense in depth: this catches malformed or out-of-range output even though code produced it.",
+      "Resource": "${ValidateOutputFunctionArn}",
+      "Parameters": {
+        "agentOutput.$": "$.determination.agentOutput"
+      },
+      "ResultPath": "$.validation",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HumanReview"
+        }
+      ],
+      "Next": "CheckVerdict"
+    },
+    "CheckVerdict": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validation.valid",
+          "BooleanEquals": true,
+          "Next": "CheckApprovalThreshold"
+        }
+      ],
+      "Default": "HumanReview"
+    },
+    "CheckApprovalThreshold": {
+      "Type": "Choice",
+      "Comment": "Boundary 5, safety. A valid award above the approval threshold still waits for a human before the irreversible write.",
+      "Choices": [
+        {
+          "Variable": "$.validation.passthrough.amount",
+          "NumericGreaterThan": 10000,
+          "Next": "HumanReview"
+        }
+      ],
+      "Default": "RecordAward"
+    },
+    "RecordAward": {
+      "Type": "Task",
+      "Comment": "The irreversible action. Conditional write, so a replay cannot double-award.",
+      "Resource": "${RecordAwardFunctionArn}",
+      "Parameters": {
+        "caseId.$": "$.caseId",
+        "passthrough.$": "$.validation.passthrough",
+        "approvedBy": "automated"
+      },
+      "ResultPath": "$.award",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "Comment": "A failed irreversible write escalates instead of ending the execution silently.",
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "HumanReview"
+        }
+      ],
+      "Next": "CheckRecorded"
+    },
+    "HumanReview": {
+      "Type": "Task",
+      "Comment": "Boundary 5, safety. The execution pauses until a human responds. The payload carries a case reference rather than the applicant record, so sensitive data does not fan out to subscribers.",
+      "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+      "Parameters": {
+        "TopicArn": "${HumanReviewTopicArn}",
+        "Message": {
+          "taskToken.$": "$$.Task.Token",
+          "caseId.$": "$.caseId",
+          "executionArn.$": "$$.Execution.Id"
+        }
+      },
+      "ResultPath": "$.humanDecision",
+      "TimeoutSeconds": 3600,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReviewTimedOut"
+        }
+      ],
+      "Next": "CheckHumanDecision"
+    },
+    "CheckHumanDecision": {
+      "Type": "Choice",
+      "Comment": "An approval must name the approver and carry the award, or it is rejected rather than recorded.",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.humanDecision.approved",
+              "BooleanEquals": true
+            },
+            {
+              "Variable": "$.humanDecision.approver",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.humanDecision.approver",
+              "IsString": true
+            },
+            {
+              "Variable": "$.humanDecision.award",
+              "IsPresent": true
+            }
+          ],
+          "Next": "ValidateApprovedAward"
+        },
+        {
+          "Variable": "$.humanDecision.approved",
+          "BooleanEquals": true,
+          "Next": "ApprovalRejected"
+        }
+      ],
+      "Default": "Denied"
+    },
+    "ValidateApprovedAward": {
+      "Type": "Task",
+      "Comment": "Boundary 2 again. A human-approved award passes the same validator as an automated one, so an approval cannot exceed the statutory ceiling.",
+      "Resource": "${ValidateOutputFunctionArn}",
+      "Parameters": {
+        "agentOutput.$": "$.humanDecision.award"
+      },
+      "ResultPath": "$.approvedValidation",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ApprovalRejected"
+        }
+      ],
+      "Next": "CheckApprovedVerdict"
+    },
+    "CheckApprovedVerdict": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.approvedValidation.valid",
+          "BooleanEquals": true,
+          "Next": "RecordApprovedAward"
+        }
+      ],
+      "Default": "ApprovalRejected"
+    },
+    "RecordApprovedAward": {
+      "Type": "Task",
+      "Comment": "The validated award is written, and the audit record captures who approved it.",
+      "Resource": "${RecordAwardFunctionArn}",
+      "Parameters": {
+        "caseId.$": "$.caseId",
+        "passthrough.$": "$.approvedValidation.passthrough",
+        "approvedBy.$": "$.humanDecision.approver"
+      },
+      "ResultPath": "$.award",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "Comment": "Not routed back to review, which would loop. The execution fails visibly with the error recorded.",
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ApprovedWriteFailed"
+        }
+      ],
+      "Next": "CheckRecorded"
+    },
+    "ApprovalRejected": {
+      "Type": "Fail",
+      "Error": "ApprovalRejected",
+      "Cause": "The approval named no approver, carried no award, or the award failed validation."
+    },
+    "ApprovedWriteFailed": {
+      "Type": "Fail",
+      "Error": "ApprovedWriteFailed",
+      "Cause": "A human-approved award could not be written. The error is in the execution history."
+    },
+    "Denied": {
+      "Type": "Succeed",
+      "Comment": "A denial is a valid terminal outcome, not a failure."
+    },
+    "ReviewTimedOut": {
+      "Type": "Fail",
+      "Error": "HumanReviewTimeout",
+      "Cause": "No reviewer responded within the timeout."
+    },
+    "CheckRecorded": {
+      "Type": "Choice",
+      "Comment": "A refused conditional write returns recorded: false. Without this check it would end as Succeeded, indistinguishable from a real write.",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.award.recorded",
+            "IsPresent": true
+          },
+          "Next": "AwardNotRecorded"
+        },
+        {
+          "Variable": "$.award.recorded",
+          "BooleanEquals": true,
+          "Next": "AwardRecorded"
+        }
+      ],
+      "Default": "AwardNotRecorded"
+    },
+    "AwardRecorded": {
+      "Type": "Succeed"
+    },
+    "AwardNotRecorded": {
+      "Type": "Fail",
+      "Error": "AwardNotRecorded",
+      "Cause": "The award write was refused, usually because an award already exists for this case. The reason is in the execution history."
+    }
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "Comment": "Control, intermediate, and safety boundaries in one workflow",
+  "StartAt": "ClassifyInput",
+  "States": {
+    "ClassifyInput": {
+      "Type": "Task",
+      "Comment": "The only probabilistic component. Everything downstream is deterministic.",
+      "Resource": "${ClassifyIntentFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FallbackHumanReview"
+        }
+      ],
+      "Next": "RouteByCategory"
+    },
+    "RouteByCategory": {
+      "Type": "Choice",
+      "Comment": "CONTROL BOUNDARY: code decides routing, not the model",
+      "Choices": [
+        {
+          "Variable": "$.category",
+          "StringEquals": "housing",
+          "Next": "HousingAgent"
+        },
+        {
+          "Variable": "$.category",
+          "StringEquals": "food_assistance",
+          "Next": "FoodAssistanceAgent"
+        }
+      ],
+      "Default": "FallbackHumanReview"
+    },
+    "HousingAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::bedrock:invokeModel",
+      "Parameters": {
+        "ModelId": "${BedrockModelId}",
+        "Body": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 1024,
+          "messages.$": "$.messages"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Bedrock.ThrottlingException",
+            "Bedrock.ServiceQuotaExceededException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FallbackHumanReview"
+        }
+      ],
+      "ResultSelector": {
+        "modelContent.$": "$.Body.content"
+      },
+      "ResultPath": "$.determination",
+      "Next": "ValidateOutput"
+    },
+    "FoodAssistanceAgent": {
+      "Type": "Task",
+      "Comment": "Additional program types share the same shape as HousingAgent.",
+      "Resource": "arn:aws:states:::bedrock:invokeModel",
+      "Parameters": {
+        "ModelId": "${BedrockModelId}",
+        "Body": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 1024,
+          "messages.$": "$.messages"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Bedrock.ThrottlingException",
+            "Bedrock.ServiceQuotaExceededException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FallbackHumanReview"
+        }
+      ],
+      "ResultSelector": {
+        "modelContent.$": "$.Body.content"
+      },
+      "ResultPath": "$.determination",
+      "Next": "ValidateOutput"
+    },
+    "ValidateOutput": {
+      "Type": "Task",
+      "Comment": "INTERMEDIATE BOUNDARY: validate before the irreversible award step",
+      "Resource": "${ValidateOutputFunctionArn}",
+      "Parameters": {
+        "modelContent.$": "$.determination.modelContent"
+      },
+      "ResultPath": "$.validation",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FallbackHumanReview"
+        }
+      ],
+      "Next": "CheckVerdict"
+    },
+    "CheckVerdict": {
+      "Type": "Choice",
+      "Comment": "Only an explicit valid verdict proceeds. The validator applies the confidence threshold.",
+      "Choices": [
+        {
+          "Variable": "$.validation.valid",
+          "BooleanEquals": true,
+          "Next": "ReturnResponse"
+        }
+      ],
+      "Default": "FallbackHumanReview"
+    },
+    "FallbackHumanReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+      "Comment": "SAFETY BOUNDARY: human approval for any case code cannot settle. The payload carries a case reference rather than the full applicant record, so sensitive data does not fan out to every subscriber.",
+      "Parameters": {
+        "TopicArn": "${HumanReviewTopicArn}",
+        "Message": {
+          "taskToken.$": "$$.Task.Token",
+          "caseId.$": "$.caseId",
+          "executionArn.$": "$$.Execution.Id"
+        }
+      },
+      "TimeoutSeconds": 86400,
+      "Next": "ReturnResponse"
+    },
+    "ReturnResponse": {
+      "Type": "Succeed"
+    }
+  }
+}
