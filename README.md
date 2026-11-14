@@ -9,7 +9,7 @@ The repository has two parts. The per-boundary samples each demonstrate one boun
 ## The five boundaries
 
 | Boundary | Question it answers | Sample |
-|---|---|---|
+|:---|:---|:---|
 | Input | Should this data reach the model at all? | [`input-output/guardrail.py`](input-output/guardrail.py) |
 | Intermediate | Is this step's output good enough for the next step? | [`intermediate/validator.py`](intermediate/validator.py) |
 | Output | Is this safe to show a user or act on? | [`input-output/guardrail.py`](input-output/guardrail.py) |
@@ -68,7 +68,7 @@ results that pass every structural check and are still wrong.
 Silent failures in two runs per model, 24 per condition per run (8 cases, 3 runs each):
 
 | Condition | Claude Sonnet 5, run 1 | Claude Sonnet 5, run 2 | Claude Haiku 4.5, run 1 | Claude Haiku 4.5, run 2 |
-|---|---|---|---|---|
+|:---|:---:|:---:|:---:|:---:|
 | no validation between steps | 0 | 0 | 0 | 2 (8%) |
 | schema boundary validating each step | 0 | 0 | **3 (12%)** | **4 (17%)** |
 | award computed in code from extracted facts | 0 | 0 | 0 | 0 |
@@ -182,13 +182,13 @@ Set `BEDROCK_MODEL_ID` to override the default model.
 Eight suites, all offline: no AWS calls, no credentials, no deployed resources.
 
 | Suite | Contract it enforces |
-|---|---|
+|:---|:---|
 | [`intermediate/test_validator.py`](intermediate/test_validator.py) | Every validator branch, including a required field present but `null`, and a model reply that is prose or leads with a thinking block |
-| [`control-safety/test_state_machine.py`](control-safety/test_state_machine.py) | Optimized integrations use service-prefixed error names, and plain Lambda tasks use bare ones; every Lambda task that calls Bedrock retries `ThrottlingException`; no retrier mixes a wildcard with specific names; every retried task and every Lambda task can escalate; every award write is followed by a check that it was recorded; every `waitForTaskToken` state has a timeout; no state is unreachable |
+| [`control-safety/test_state_machine.py`](control-safety/test_state_machine.py) | Optimized integrations use service-prefixed error names, and plain Lambda tasks use bare ones<br>Every Lambda task that calls Bedrock retries `ThrottlingException`<br>No retrier mixes a wildcard with specific names<br>Every retried task and every Lambda task can escalate<br>Every award write is followed by a check that it was recorded<br>Every `waitForTaskToken` state has a timeout<br>No state is unreachable |
 | [`observability/test_boundary_metric.py`](observability/test_boundary_metric.py) | The alarm watches a dimension set the code publishes, and `TreatMissingData` is explicit |
-| [`gateway-authorization/test_tool_schema.py`](gateway-authorization/test_tool_schema.py) | Numerically compared parameters are declared `integer`; the Cedar ceiling matches the validator's `STATUTORY_MAXIMUM`; the Cedar action names the tool the Lambda target exposes; the schema uses only keys the gateway accepts; the committed policy keeps its ARN placeholder |
-| [`endtoend/test_fact_cross_check.py`](endtoend/test_fact_cross_check.py) | Every number the model extracts appears in the case record; correct extractions for each case pass |
-| [`endtoend/test_compute_award.py`](endtoend/test_compute_award.py) | The award formula gives each evaluation case its expected total; a stated zero period, a missing one-time amount, and out-of-range facts escalate; the ceiling cites G-0.2; the evaluation imports this formula rather than keeping its own copy |
+| [`gateway-authorization/test_tool_schema.py`](gateway-authorization/test_tool_schema.py) | Numerically compared parameters are declared `integer`<br>The Cedar ceiling matches the validator's `STATUTORY_MAXIMUM`<br>The Cedar action names the tool the Lambda target exposes<br>The schema uses only keys the gateway accepts<br>The committed policy keeps its ARN placeholder |
+| [`endtoend/test_fact_cross_check.py`](endtoend/test_fact_cross_check.py) | Every number the model extracts appears in the case record<br>Correct extractions for each case pass |
+| [`endtoend/test_compute_award.py`](endtoend/test_compute_award.py) | The award formula gives each evaluation case its expected total<br>A stated zero period, a missing one-time amount, and out-of-range facts escalate<br>The ceiling cites G-0.2<br>The evaluation imports this formula rather than keeping its own copy |
 | [`endtoend/test_alarm_dimensions.py`](endtoend/test_alarm_dimensions.py) | The alarm `deploy.py` creates watches a dimension set the end-to-end Lambdas publish when their own code runs |
 | [`endtoend/test_record_award.py`](endtoend/test_record_award.py) | The award write is conditional, a second write for the same case is refused without changing the first, and other errors raise |
 
